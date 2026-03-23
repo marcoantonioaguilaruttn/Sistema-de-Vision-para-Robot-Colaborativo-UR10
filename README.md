@@ -4,53 +4,29 @@ Sistema de pick & place automatizado que combina una cámara OAK con detección 
 
 ---
 
-## Requisitos de hardware
-
-- Robot Universal Robots UR10
-- Cámara Luxonis OAK-1 Lite
-- Gripper Robotiq (HAND-E o compatible)
-- PC con Windows 10/11 y conexión a la misma red que el robot
-
----
-
 ## 1. Preparación
+
+En la presente sección se indicarán los pasos a seguir para utilizar correctamente el módulo. Es de suma importancia seguir cada paso
 
 ### 1.1 Instalar Python 3.11
 
-> ⚠️ **Importante:** Usar Python 3.11 específicamente. Python 3.12 y 3.13 no son compatibles con `ur_rtde`.
-> Descargar desde [python.org](https://www.python.org/downloads/release/python-3119/) — **NO usar la versión de la Microsoft Store**.
+> Descargar desde [python.org](https://www.python.org/downloads/release/python-3119/) 
 
 Durante la instalación marcar la opción **"Add Python to PATH"**.
-
-Verificar la instalación:
-```bash
-python --version
-# Python 3.11.x
-```
 
 ### 1.2 Instalar Visual Studio Code
 
 Descargar desde [code.visualstudio.com](https://code.visualstudio.com/) e instalar la extensión **Python** (Microsoft).
 
-### 1.3 Habilitar rutas largas en Windows
 
-`ur_rtde` requiere compilación con rutas que superan el límite de 260 caracteres de Windows. Ejecutar en **PowerShell como administrador**:
-
-```powershell
-New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
-  -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
-```
-
-Reiniciar el equipo después de aplicar el cambio.
-
-### 1.4 Instalar CMake y Visual Studio Build Tools
+### 1.3 Instalar CMake y Visual Studio Build Tools
 
 `ur_rtde` se compila desde código fuente y requiere estas herramientas:
 
 1. Descargar e instalar [CMake](https://cmake.org/download/) — marcar **"Add CMake to the system PATH"**
 2. Descargar [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) e instalar el componente **"Desarrollo de escritorio con C++"**
 
-### 1.5 Crear entorno virtual
+### 1.4 Crear entorno virtual
 
 Abrir una terminal en la carpeta del proyecto:
 
@@ -70,7 +46,7 @@ Activar el entorno:
 
 El prompt debe mostrar `(.venv)` al inicio.
 
-### 1.6 Instalar dependencias
+### 1.5 Instalar dependencias
 
 Con el entorno virtual activado:
 
@@ -90,7 +66,7 @@ python -c "from ultralytics import YOLO; print('ultralytics OK')"
 python -c "import depthai; print('depthai OK')"
 ```
 
-### 1.7 Estructura esperada del proyecto
+### 1.6 Estructura esperada del proyecto
 
 ```
 ProyectoIntegrador_2/
