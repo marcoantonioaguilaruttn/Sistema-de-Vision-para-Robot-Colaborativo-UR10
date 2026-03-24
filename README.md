@@ -8,7 +8,7 @@ Sistema de pick & place automatizado que combina una cámara OAK con detección 
 
 En la presente sección se indicarán los pasos a seguir para utilizar correctamente el módulo. Es de suma importancia seguir cada paso
 
-### 1.1 Instalar Python 3.11
+### 1.1 Instalar una versión de Python mayor a 3.9 (Se sugiere Python 3.12)
 
 > Descargar desde [python.org](https://www.python.org/downloads/release/python-3119/) 
 
@@ -18,15 +18,7 @@ Durante la instalación marcar la opción **"Add Python to PATH"**.
 
 Descargar desde [code.visualstudio.com](https://code.visualstudio.com/) e instalar la extensión **Python** (Microsoft).
 
-
-### 1.3 Instalar CMake y Visual Studio Build Tools
-
-`ur_rtde` se compila desde código fuente y requiere estas herramientas:
-
-1. Descargar e instalar [CMake](https://cmake.org/download/) — marcar **"Add CMake to the system PATH"**
-2. Descargar [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) e instalar el componente **"Desarrollo de escritorio con C++"**
-
-### 1.4 Crear entorno virtual
+### 1.3 Crear entorno virtual
 
 Abrir una terminal en la carpeta del proyecto:
 
@@ -46,7 +38,7 @@ Activar el entorno:
 
 El prompt debe mostrar `(.venv)` al inicio.
 
-### 1.5 Instalar dependencias
+### 1.4 Instalar dependencias
 
 Con el entorno virtual activado:
 
@@ -66,7 +58,7 @@ python -c "from ultralytics import YOLO; print('ultralytics OK')"
 python -c "import depthai; print('depthai OK')"
 ```
 
-### 1.6 Estructura sugerida del proyecto
+### 1.5 Estructura sugerida del proyecto
 
 ```
 ProyectoIntegrador_2/
@@ -249,11 +241,6 @@ Moviendo caja 'circulo'  → [-0.6222, -0.365, -0.38451, 2.226, 2.183, 0.0]
 **`ur_rtde` no instala en Python 3.12/3.13**
 Usar Python 3.11 instalado desde python.org (no Microsoft Store).
 
-**Error 403 al hacer `git push`**
-El usuario de Git no coincide con el dueño del repositorio. Corregir con:
-```bash
-git remote set-url origin https://TU_USUARIO@github.com/TU_USUARIO/repo.git
-```
 
 **El gripper no responde**
 Verificar que el ID del gripper sea 1 en el Teach Pendant y que el archivo del gripper se encuentre en el directorio del archivo a ejecutar.
