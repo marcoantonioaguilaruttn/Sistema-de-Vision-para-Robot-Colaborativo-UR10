@@ -158,6 +158,8 @@ El script guiará el proceso:
 
 > El tablero de calibración debe ser de **6×9 cuadros** con cuadros de **2.5 cm**. Se adjunta el archivo png proporcionado directamente por OpenCV.
 
+![Tablero de calibración para módulo.](/imagenes/pattern.png "Tablero de calibración para módulo.")
+
 ---
 
 ## 3. Uso del módulo principal — `main.py`
@@ -172,10 +174,6 @@ HOST = "192.168.56.101"
 
 # Ruta al modelo YOLOv8-OBB entrenado
 modeloUsado = "models/best.pt"
-
-# Pose segura del robot en [x, y, z, rx, ry, rz] (metros y radianes)
-# ⚠️ DEFINIR ANTES DE EJECUTAR — actualmente en [0,0,0,0,0,0]
-puntoSeguro = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Profundidad de la cámara a la mesa de trabajo (metros)
 # Buscar la línea: profundidad = None  y reemplazar con el valor medido
@@ -258,8 +256,7 @@ git remote set-url origin https://TU_USUARIO@github.com/TU_USUARIO/repo.git
 ```
 
 **El gripper no responde**
-Verificar que el ID del gripper sea 1 en el Teach Pendant y que el robot esté en modo remoto.
-
+Verificar que el ID del gripper sea 1 en el Teach Pendant y que el archivo del gripper se encuentre en el directorio del archivo a ejecutar.
 **`calibracion/matriz.npy` no encontrado**
 Ejecutar `calibracionCamara.py` para generar el archivo de calibración.
 
