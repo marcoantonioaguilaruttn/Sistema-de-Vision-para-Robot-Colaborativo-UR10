@@ -66,20 +66,24 @@ python -c "from ultralytics import YOLO; print('ultralytics OK')"
 python -c "import depthai; print('depthai OK')"
 ```
 
-### 1.6 Estructura esperada del proyecto
+### 1.6 Estructura sugerida del proyecto
 
 ```
 ProyectoIntegrador_2/
+└── scriptsPrueba/
+│   ├── pruebaConexion.py
+│   └── pruebaGripper.py
+│   ├── robotiqGripper.py
+│   ├── robotiq_gripper_control.py
+│   ├── robotiq_preamble.py
+│   └── testCamara.py
 ├── main.py
 ├── robotiqGripper.py
-├── calibracionCamara.py
-├── intrinsicosCamara.py
-├── testCamara.py
-├── pruebaGripper.py
-├── pruebaConexion.py
 ├── models/
 │   └── best.pt
 └── calibracion/
+    ├── calibracionCamara.py
+    ├── intrinsicosCamara.py
     ├── imagenesDataset/
     └── matriz.npy
 ```
@@ -114,7 +118,7 @@ Anotar el valor de foco final. Si la imagen se ve nítida, la cámara funciona c
 
 ### 2.2 Verificar la conexión con el robot — `pruebaConexion.py`
 
-> ⚠️ **Seguridad:** Despejar el área de trabajo del robot antes de ejecutar. El robot se moverá por una secuencia de posiciones predefinidas.
+> **Seguridad:** Despejar el área de trabajo del robot antes de ejecutar. El robot se moverá por una secuencia de posiciones predefinidas.
 
 Verificar que la IP del robot en el archivo sea correcta (`192.168.56.101` por defecto) y que el robot esté en **modo remoto**.
 
@@ -134,6 +138,7 @@ El gripper debe cerrarse completamente y luego abrirse. La terminal mostrará la
 
 - Que el ID del gripper sea **1** en el Teach Pendant (Installation → URCaps → Gripper)
 - Que el robot esté encendido y conectado a la red
+- El archivo robotiqGripper.py está presente en el mismo nivel de archivos que pruebaGripper.py
 
 ### 2.4 Calibración ojo-mano — `calibracionCamara.py`
 
@@ -151,7 +156,7 @@ El script guiará el proceso:
 4. Presionar `Enter` para terminar la captura e iniciar la calibración automáticamente
 5. El archivo `calibracion/matriz.npy` se genera al finalizar
 
-> El tablero de calibración debe ser de **6×9 cuadros** con cuadros de **2.5 cm**.
+> El tablero de calibración debe ser de **6×9 cuadros** con cuadros de **2.5 cm**. Se adjunta el archivo png proporcionado directamente por OpenCV.
 
 ---
 
