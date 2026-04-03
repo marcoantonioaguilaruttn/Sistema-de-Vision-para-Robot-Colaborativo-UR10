@@ -2,6 +2,8 @@
 
 Sistema de pick & place automatizado que combina una cámara OAK con detección de objetos mediante YOLOv8-OBB y control de un robot UR10 con gripper Robotiq.
 
+![Foto del módulo instalado.](/imagenes/fotoModulo.jpg "Foto del módulo instalado.")
+
 ---
 
 ## 1. Preparación
