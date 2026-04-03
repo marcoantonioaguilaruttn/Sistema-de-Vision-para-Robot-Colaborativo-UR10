@@ -3,219 +3,308 @@ import math
 import numpy as np
 import depthai as dai
 import cv2
+import os
 from ultralytics import YOLO
 
 from rtde_control import RTDEControlInterface
 from rtde_receive import RTDEReceiveInterface
-from robotiqGripper import RobotiqGripper  
+from robotiqGripper import RobotiqGripper
 
-from calibracion import intrinsicosCamara as intr
+METODO_ACTIVO = "Park"  
 
-R_cam2base, t_cam2base = np.load("calibración/matriz.npy", allow_pickle=True)
+#CORRECCIONES APLICADAS A LA TRANSFORMACION
+CORR_A  =  0.939867
+CORR_B  =  0.060054
+CORR_TX = -0.012375
+CORR_TY =  0.060002
 
-HOST = "192.168.56.101"
+#FUNCION PARA APLICAR LA CORRECCION
+def aplicarCorreccionAfin(x, y):
+    x_c = CORR_A * x - CORR_B * y + CORR_TX
+    y_c = CORR_B * x + CORR_A * y + CORR_TY
+    return x_c, y_c
 
-rtde_c = RTDEControlInterface(HOST)   
-rtde_r = RTDEReceiveInterface(HOST)   
+DIR_RESULTADOS_CALIB = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "calibracion", "ResultadosCalib"
+)
+DIR_MATRIZ_LEGACY = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "calibracion", "matriznpy.npz"
+)
 
-print("Robot conectado (ur_rtde)")
+#METODOS DISPONIBLES PARA LAS TRANSFORMACIONES ENTRE CÁMARA Y COORDENDAS BASE DEL ROBOT
+NOMBRES_METODOS = ["Tsai", "Park", "Horaud", "Andreff", "Daniilidis"]
 
+
+def cargarTodosLosMetodos():
+    metodos = {}
+    
+    for nombre in NOMBRES_METODOS:
+        ruta = os.path.join(DIR_RESULTADOS_CALIB, f"T_cam2gripper_{nombre}.npz")
+        if os.path.exists(ruta):
+            data = np.load(ruta)
+            metodos[nombre] = (data["R"], data["T"].reshape(3, 1))
+            print(f"  [OK] {nombre:12s} → {ruta}")
+            
+        else:
+            print(f"  [--] {nombre:12s} no encontrado en {ruta}")
+
+    if os.path.exists(DIR_MATRIZ_LEGACY):
+        data = np.load(DIR_MATRIZ_LEGACY)
+        metodos["Legacy"] = (data["R"], data["T"].reshape(3, 1))
+        print(f"  [OK] {'Legacy':12s} → {DIR_MATRIZ_LEGACY}")
+
+    if not metodos:
+        raise FileNotFoundError(
+            "No se encontró ningún archivo de calibración.\n"
+            "Ejecuta primero calibracion_ojo_mano.py para generarlos."
+        )
+    return metodos
+
+print("\nCargando matrices de calibración:")
+CALIBRACIONES = cargarTodosLosMetodos()
+
+print(f"Métodos disponibles: {list(CALIBRACIONES.keys())}\n")
+
+if METODO_ACTIVO and METODO_ACTIVO in CALIBRACIONES:
+    R_cam2base, t_cam2base = CALIBRACIONES[METODO_ACTIVO]
+    print(f"Método activo para el robot: {METODO_ACTIVO}")
+elif CALIBRACIONES:
+    primer_metodo          = list(CALIBRACIONES.keys())[0]
+    R_cam2base, t_cam2base = CALIBRACIONES[primer_metodo]
+    print(f"METODO_ACTIVO no definido — usando '{primer_metodo}' por defecto.")
+
+
+HOST   = "192.168.56.101" #CAMBIAR POR IP DEL ROBOT UR. ESTA SE PUEDE ENCONTRAR EN EL TEACH PENDANT
+rtde_c = RTDEControlInterface(HOST) #SE ESTABLECE LA CONEXIÓN DE CONTROL CON EL ROBOT
+rtde_r = RTDEReceiveInterface(HOST) #SE ESTABLECE LA CONEXIÓN DE RECEPCIÓN DE DATOS DEL ROBOT.
+
+print("Robot conectado")
+
+#SE CREA UNA INSTANCIA DE LA CLASE GRIPPER
 gripper = RobotiqGripper()
-gripper.connect(HOST, 63352)          
+gripper.connect(HOST, 63352)
+
 gripper.activate()
-gripper.move_and_wait_for_pos(0, 255, 255)   
+gripper.move_and_wait_for_pos(0, 255, 255)
 
-elevacionEstandar         = -0.3485          
-elevacionModuloPiezas     = -0.38451         
-ejeModuloPiezas           = -0.365           
-anguloGripperModuloPiezas = (2.226, 2.183, 0.0)
+#VALORES ESTÁNDAR PARA LA COLOCACIÓN DE PIEZAS
+elevacionEstandar         = 0.046
+elevacionModuloPiezas     = 0.046
+ejeModuloPiezas           = -0.365 #COORDENADAS DEL EJE Y DEL MODULO DE COLOCACIÓN
+anguloGripperModuloPiezas = (2.226, 2.183, 0.0) #ANGULO DEL GRIPPER AL MOMENTO DE DEPOSITAR LOS CUBOS
 
-puntoSeguro = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   
+RX_AGARRE = 2.193
+RY_AGARRE = 2.223
+RZ_AGARRE = 0.013
 
-robotOcupado = False
-modeloUsado  = "models/best.pt"            
-model        = YOLO(modeloUsado)                
+puntoSeguro     = [-0.615, -0.168, 0.069, 1.992, 2.396, 0] #COORDENDAS TCP A DONDE REGRESARA EL RBOOT DESPUES DE COLOCAR CADA PIEZA
+robotOcupado    = False
 
+modeloUsado     = "models/best.pt" #MODELO YOLO USADO PARA LA DETECCION DE PIEZAS
+model           = YOLO(modeloUsado)
+
+RESOLUCION_YOLO = (384, 384) #RESOLUCION, NO CAMBIAR BAJO NINGUNA CIRCUNSTANCIA
+
+#FUNCION PARA CARGAR LOS PARAMETROS INTRINSECOS DE LA CÁMARA OAK-1 LITE
+def intrinsicosCamara(resolucion=RESOLUCION_YOLO):
+    with dai.Device() as device:
+        calibData     = device.readCalibration()
+        intrinsics    = calibData.getCameraIntrinsics(
+            dai.CameraBoardSocket.CAM_A,
+            resolucion[0],
+            resolucion[1]
+        )
+        
+        camera_matrix = np.array(intrinsics)
+        
+        dist_coeffs   = np.array(
+            calibData.getDistortionCoefficients(dai.CameraBoardSocket.CAM_A)
+        )
+        
+    print(f"Intrínsecos obtenidos para resolución {resolucion[0]}x{resolucion[1]}")
+    
+    return camera_matrix, dist_coeffs
+
+#FUNCION PARA MOVER DE FORMA LINEAL EL ROBOT, TOMA COMO ARGUMENTOS COORDENADAS TCP
 def moveL(pose, speed=0.1, accel=0.5):
-    """
-    Movimiento lineal cartesiano.
-    pose: [x, y, z, rx, ry, rz] en metros y radianes.
-    ur_rtde usa moveL(pose, speed, accel, asynchronous=False).
-    """
+    """Movimiento lineal cartesiano. pose: [x,y,z,rx,ry,rz] en metros/rad."""
     rtde_c.moveL(pose, speed, accel)
 
-def moveJ(joints_deg, speed=1.0, accel=1.4):
-    """
-    Movimiento por joints.
-    joints_deg: lista de 6 ángulos en GRADOS (se convierten a radianes).
-    """
-    joints_rad = [math.radians(q) for q in joints_deg]
-    rtde_c.moveJ(joints_rad, speed, accel)
+#FUNCION PARA MOVER LAS ARTICULACIONES DEL ROBOT, SE INTEGRA UNA CONVERSION DE GRADOS A RADIANES
+def moveJ(joints, speed=1.0, accel=1.4):
 
+    if max(abs(j) for j in joints) > 2 * math.pi:
+        joints = [math.radians(q) for q in joints]
+        
+    rtde_c.moveJ(joints, speed, accel)
+
+#FUNCION PARA OBTENER LA POSICIÓN TCP ACTUAL
 def getTCPPose():
-    """
-    Retorna la pose TCP actual usando RTDEReceiveInterface.
-    Equivale al struct.unpack manual del puerto 30003.
-    """
-    pose = rtde_r.getActualTCPPose()   
+    pose = rtde_r.getActualTCPPose()
     x, y, z, rx, ry, rz = pose
     return {
-        "x_m": x,    "y_m": y,    "z_m": z,
-        "x_mm": x * 1000, "y_mm": y * 1000, "z_mm": z * 1000,
-        "rx": rx,    "ry": ry,    "rz": rz
+        "x_m": x,       "y_m": y,       "z_m": z,
+        "x_mm": x*1000, "y_mm": y*1000, "z_mm": z*1000,
+        "rx": rx,       "ry": ry,       "rz": rz
     }
 
-def convertirCoordenada(centroX, centroY, anguloOBB):
-    camera_matrix, dist_coeffs = intr.intrinsicosCamara()
+def waitActivo(segundos):
+    """Reemplaza time.sleep() manteniendo ventanas de OpenCV responsivas."""
+    fin = time.monotonic() + segundos
+    while time.monotonic() < fin:
+        cv2.waitKey(50)
+        
+#CONVIERTE LAS COORDENADAS EN PIXELES DEL MODELO YOLO A COORDENADAS TCP DEL ROBOT
+def convertirCoordenada(centroX, centroY, anguloOBB, R=None, t=None):
+    if R is None:
+        R = R_cam2base
+    if t is None:
+        t = t_cam2base
 
-    profundidad = None  
+    r20, r21, r22 = R[2, :]
+    t2            = float(t[2, 0])
 
-    fx = camera_matrix[0, 0]
-    fy = camera_matrix[1, 1]
-    cx = camera_matrix[0, 2]
-    cy = camera_matrix[1, 2]
+    x_cam_norm = (centroX - CX) / FX
+    y_cam_norm = (centroY - CY) / FY
 
-    x_cam = (centroX - cx) / fx * profundidad
-    y_cam = (centroY - cy) / fy * profundidad
-    z_cam = profundidad
+    denominador = r20 * x_cam_norm + r21 * y_cam_norm + r22
+    
+    #EVITA DIVISION POR CERO ASIGNANDO PROFUNDIDAD POR DEFECTO
+    if abs(denominador) < 1e-6:
+        z_cam = 0.37
+    else:
+        z_cam = (elevacionEstandar - t2) / denominador
 
+    x_cam = x_cam_norm * z_cam
+    y_cam = y_cam_norm * z_cam
+
+    #TRANSFORMA PUNTO DE ESPACIO CAMARA A ESPACIO ROBOT
     P_cam   = np.array([[x_cam], [y_cam], [z_cam]])
-    P_robot = R_cam2base @ P_cam + t_cam2base
+    P_robot = R @ P_cam + t
 
-    rx, ry = anguloGripperModuloPiezas[0], anguloGripperModuloPiezas[1]
-    rz     = anguloOBB
+    coords = list(P_robot.flatten())
 
-    return list(P_robot.flatten()) + [rx, ry, rz]
+    #APLICA CORRECCION AFIN SOLO CON LA CALIBRACION PRINCIPAL
+    if R is R_cam2base:
+        coords[0], coords[1] = aplicarCorreccionAfin(coords[0], coords[1])
 
+    #RETORNA COORDENADAS XYZ + ORIENTACION DE AGARRE + ANGULO OBB
+    return coords + [RX_AGARRE, RY_AGARRE, RZ_AGARRE, anguloOBB]
+    
+#EJECUTA LA SECUENCIA COMPLETA DE PICK AND PLACE PARA UN OBJETO
 def movimientoCoordenada(coord, espacio):
-    """
-    Recoge un objeto en `coord` y lo deposita en `espacio`.
-    Ambos son listas [x, y, z, rx, ry, rz] en metros/rad.
-    """
-    tiempoAcciones = 1
-    velocidad      = 0.1
-    aceleracion    = 0.1
+    velocidad    = 0.2
+    aceleracion  = 0.2
+    tEspera      = 1
+
+    elevacionAproximacion = 0.041   
+    elevacionAgarre       = 0.01   
 
     coord   = list(coord)
     espacio = list(espacio)
 
-    def posicionSuperior(pose):
-        """Eleva la coordenada Z al nivel estándar de seguridad."""
-        p = list(pose)
-        p[2] = elevacionEstandar
-        return p
+    anguloOBB = coord[6]
 
-    def aplicarAnguloGripper(pose, angulo):
-        """Sobreescribe el componente rz (índice 5) de la pose."""
-        p = list(pose)
-        p[5] = angulo
+    #GENERA POSE SEGURA SOBRE UN PUNTO A ALTURA DE APROXIMACION
+    def posicionSuperior(pose, elevacion=elevacionAproximacion):
+        p    = list(pose[:6])   
+        p[2] = elevacion
         return p
 
     puntoSuperiorCubo    = posicionSuperior(coord)
     puntoSuperiorEspacio = posicionSuperior(espacio)
+    puntoSuperiorModulo  = posicionSuperior(espacio)
+    puntoSuperiorModulo[5] = anguloGripperModuloPiezas[2]
 
-    coordConAngulo      = aplicarAnguloGripper(coord,             coord[5])
-    puntoSuperiorAngulo = aplicarAnguloGripper(puntoSuperiorCubo, coord[5])
+    #POSE DE AGARRE SOBRE EL OBJETO
+    coordAgarre = [
+        coord[0], coord[1], elevacionAgarre,
+        RX_AGARRE, RY_AGARRE, RZ_AGARRE
+    ]
+
+    #POSE DE DEPOSITO EN EL SLOT DEL MODULO
+    espacioDeposito = [
+        espacio[0], espacio[1], elevacionAgarre,
+        RX_AGARRE, RY_AGARRE, RZ_AGARRE
+    ]
+
+    print("Moviendo a punto seguro")
+    moveL(puntoSeguro, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
+
+    print("Moviendo sobre el cubo")
+    moveL(puntoSuperiorCubo, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
+
+    print(f"Rotando muñeca 3 → {anguloOBB:.3f} rad")
     
-    moveL(puntoSeguro,        speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
-
-    moveL(puntoSuperiorAngulo, speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
+    #ALINEA LA MUNECA DEL ROBOT AL ANGULO DETECTADO POR OBB
+    jointsActuales    = list(rtde_r.getActualQ())
+    jointsActuales[5] = anguloOBB
     
-    moveL(coordConAngulo,      speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
+    moveJ(jointsActuales, speed=0.1, accel=0.1); waitActivo(tEspera)
 
-    gripper.move_and_wait_for_pos(255, 255, 255)
-    time.sleep(tiempoAcciones)
+    print("Bajando al objeto")
+    moveL(coordAgarre, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
 
-    moveL(puntoSuperiorAngulo, speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
-    
-    puntoSuperiorModulo = aplicarAnguloGripper(puntoSuperiorCubo, anguloGripperModuloPiezas[2])
-    moveL(puntoSuperiorModulo, speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
+    print("Cerrando gripper")
+    gripper.move_and_wait_for_pos(255, 255, 255); waitActivo(tEspera)
 
-    moveL(puntoSuperiorEspacio, speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
-      
-    moveL(espacio,              speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
-  
-    gripper.move_and_wait_for_pos(0, 255, 255)
-    time.sleep(tiempoAcciones)
-    
-    moveL(puntoSuperiorEspacio, speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
-    
-    moveL(puntoSeguro,          speed=velocidad, accel=aceleracion)
-    time.sleep(tiempoAcciones)
+    #SUBE, TRASLADA Y DEPOSITA LA PIEZA EN EL MODULO
+    moveL(puntoSuperiorCubo, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
+    moveL(puntoSuperiorModulo, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
+    moveL(espacioDeposito, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
 
+    print("Abriendo gripper")
+    gripper.move_and_wait_for_pos(0, 255, 255); waitActivo(tEspera)
+
+    moveL(puntoSuperiorEspacio, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
+
+    print("Regresando al punto seguro")
+    moveL(puntoSeguro, speed=velocidad, accel=aceleracion); waitActivo(tEspera)
+
+#CONVIERTE POSICION EN MM A COORDENADA TCP DEL MODULO DE PIEZAS
 def posModulo(x_mm):
-    """
-    Convierte coordenada X en mm al formato de pose en metros
-    con los parámetros fijos del módulo.
-    """
-    x = x_mm / 1000.0
-    y = ejeModuloPiezas / 1000.0    
-    z = elevacionModuloPiezas       
-    return [x, y, z, *anguloGripperModuloPiezas]
+    return [
+        x_mm / 1000.0,
+        ejeModuloPiezas,
+        elevacionModuloPiezas,
+        *anguloGripperModuloPiezas,
+        0.0   
+    ]
 
+#SLOTS DE DEPOSITO POR CLASE: [SLOT_0, SLOT_1, INDICE_ACTUAL]
 coordenadasModulo = {
-    "cuadrado":  [posModulo(-731.4), posModulo(-787.8), 0],
-    "triangulo": [posModulo(0),      posModulo(0),      0],
-    "circulo":   [posModulo(-622.2), posModulo(-677.5), 0],
-    "estrella":  [posModulo(-862),   posModulo(0),      0],
+    "cuadrado":  [posModulo(-731.4),  posModulo(-787.8),   0],
+    "triangulo": [posModulo(-973.85), posModulo(-1023.85), 0],
+    "circulo":   [posModulo(-622.2),  posModulo(-677.5),   0],
+    "estrella":  [posModulo(-862),    posModulo(-918),     0],
 }
 
-def frameFinal(frame, resultados_obb):
-    coordenadas, clases = displayFrame("Objetos detectados", frame, resultados_obb, rtn=True)
-
-    print("Se han detectado los siguientes objetos:")
-    for i, coordenada in enumerate(coordenadas):
-        print(f"  {clases[i]} con coordenadas {coordenada}")
-
-    input("Presiona Enter para continuar con el ordenamiento de las cajas...")
-
-    for i, coordenada in enumerate(coordenadas):
-        clase = clases[i]
-        j     = coordenadasModulo[clase][2]
-
-        if j > 1:
-            print(f"[ERROR] Todos los espacios para '{clase}' han sido cubiertos.")
-            continue
-
-        coordenadaColocamiento = coordenadasModulo[clase][j]
-        print(f"Moviendo caja '{clase}' → {coordenadaColocamiento}")
-
-        coordenadasRobot = convertirCoordenada(*coordenada)
-        movimientoCoordenada(coordenadasRobot, coordenadaColocamiento)
-
-        coordenadasModulo[clase][2] += 1
-
+#DIBUJA DETECCIONES OBB EN EL FRAME Y RETORNA COORDENADAS Y CLASES SI SE SOLICITA
 def displayFrame(name, frame, resultados_obb, rtn=False):
-    """
-    Dibuja los OBB detectados por Ultralytics sobre el frame.
-    resultados_obb: results[0].obb  (lista de OBB del primer resultado)
-    """
     color  = (255, 0, 0)
     coords = []
     clases = []
 
-    if resultados_obb is not None:
-        for box in resultados_obb:
-            
-            xywhr = box.xywhr[0].cpu().numpy()
-            centroX   = int(xywhr[0])
-            centroY   = int(xywhr[1])
-            anguloOBB = float(xywhr[4])
+    if resultados_obb is not None and len(resultados_obb) > 0:
+        xywhr_all    = resultados_obb.xywhr.cpu().numpy()
+        xyxyxyxy_all = resultados_obb.xyxyxyxy.cpu().numpy()
+        cls_all      = resultados_obb.cls.cpu().numpy()
+        conf_all     = resultados_obb.conf.cpu().numpy()
 
-            
-            esquinas = box.xyxyxyxy[0].cpu().numpy().reshape((-1, 1, 2)).astype(int)
+        for i in range(len(cls_all)):
+            centroX   = int(xywhr_all[i][0])
+            centroY   = int(xywhr_all[i][1])
+            anguloOBB = float(xywhr_all[i][4])
+            clase     = model.names[int(cls_all[i])]
+            confianza = float(conf_all[i])
+
+            #DIBUJA CAJA OBB Y ETIQUETA SOBRE EL FRAME
+            esquinas = xyxyxyxy_all[i].reshape((-1, 1, 2)).astype(int)
             cv2.polylines(frame, [esquinas], isClosed=True, color=color, thickness=2)
-
-            clase = model.names[int(box.cls[0])]
-            cv2.putText(frame, clase, (centroX + 10, centroY + 20),
+            cv2.putText(frame, f"{clase} {confianza:.2f}",
+                        (centroX + 10, centroY + 20),
                         cv2.FONT_HERSHEY_TRIPLEX, 0.5, (255, 255, 255))
 
             coords.append((centroX, centroY, anguloOBB))
@@ -226,58 +315,140 @@ def displayFrame(name, frame, resultados_obb, rtn=False):
     if rtn:
         return coords, clases
 
-moveL(puntoSeguro, speed=0.5, accel=0.3)
-time.sleep(3)
+#MUESTRA DETECCIONES, COMPARA CALIBRACIONES Y EJECUTA EL ORDENAMIENTO DE PIEZAS
+def frameFinal(frame, resultados_obb):
+    coordenadas, clases = displayFrame("Objetos detectados", frame, resultados_obb, rtn=True)
+    cv2.waitKey(1)
 
+    print("\n" + "="*70)
+    print("OBJETOS DETECTADOS")
+    print("="*70)
+    for i, coordenada in enumerate(coordenadas):
+        print(f"  [{i}] {clases[i]:12s}  píxeles=({coordenada[0]}, {coordenada[1]})  "
+              f"ángulo={coordenada[2]:.3f} rad")
+
+    #IMPRIME TABLA COMPARATIVA DE COORDENADAS PARA TODOS LOS METODOS DE CALIBRACION
+    print("\n" + "="*70)
+    print("COMPARATIVA DE COORDENADAS POR MÉTODO DE CALIBRACIÓN")
+    print("="*70)
+
+    for i, coordenada in enumerate(coordenadas):
+        clase = clases[i]
+        print(f"\n  Objeto [{i}] — {clase}")
+        print(f"  {'Método':<12}  {'X (mm)':>9}  {'Y (mm)':>9}  {'Z (mm)':>9}")
+        print(f"  {'-'*45}")
+
+        for nombre, (R_m, t_m) in CALIBRACIONES.items():
+            try:
+                c = convertirCoordenada(*coordenada, R=R_m, t=t_m)
+                print(f"  {nombre:<12}  {c[0]*1000:>9.1f}  {c[1]*1000:>9.1f}  {c[2]*1000:>9.1f}")
+            except Exception as e:
+                print(f"  {nombre:<12}  ERROR: {e}")
+
+    print("\n" + "="*70)
+    print(f"Método activo: "
+          f"{METODO_ACTIVO if METODO_ACTIVO else list(CALIBRACIONES.keys())[0]}")
+    print("="*70)
+
+    input("\nPresiona Enter para iniciar el ordenamiento...")
+    cv2.waitKey(1)
+
+    #RECORRE CADA OBJETO DETECTADO Y LO DEPOSITA EN SU SLOT CORRESPONDIENTE
+    for i, coordenada in enumerate(coordenadas):
+        clase = clases[i]
+        if clase not in coordenadasModulo:
+            print(f"  [OMITIDO] Clase '{clase}' no tiene posición de módulo definida.")
+            continue
+
+        info_modulo = coordenadasModulo[clase]
+        idx_slot    = info_modulo[2]
+
+        #OMITE LA CLASE SI YA SE LLENARON SUS DOS SLOTS
+        if idx_slot > 1:
+            print(f"  [OMITIDO] Clase '{clase}' ya tiene todos sus slots ocupados.")
+            continue
+
+        slot        = info_modulo[idx_slot]
+        coord_robot = convertirCoordenada(*coordenada)
+
+        print(f"\nRecogiendo {clase} → módulo slot {idx_slot}")
+        print(f"  x={coord_robot[0]*1000:.1f}mm  y={coord_robot[1]*1000:.1f}mm  "
+              f"z={coord_robot[2]*1000:.1f}mm  OBB={coord_robot[6]:.3f}rad")
+
+        try:
+            movimientoCoordenada(coord_robot, slot)
+            #AVANZA EL INDICE DE SLOT TRAS DEPOSITAR EXITOSAMENTE
+            coordenadasModulo[clase][2] = idx_slot + 1
+        except Exception as e:
+            print(f"  [ERROR] movimientoCoordenada falló para {clase}: {e}")
+            input("  Presiona Enter para continuar con el siguiente objeto...")
+
+    print("\nOrdenamiento completado.")
+
+#SE CARGAN LOS INTRINSECOS DE LA CÁMARA OAK-1 LITE
+camera_matrix, dist_coeffs = intrinsicosCamara(RESOLUCION_YOLO)
+FX = camera_matrix[0, 0]
+FY = camera_matrix[1, 1]
+CX = camera_matrix[0, 2]
+CY = camera_matrix[1, 2]
+
+time.sleep(2)
+
+#SE INICIALIZA EL PIPELINE DE DEPTHAI Y SE CONFIGURA LA SALIDA DE CAMARA
 with dai.Pipeline() as pipeline:
-    
-    cam = pipeline.create(dai.node.ColorCamera)
-    cam.setPreviewSize(640, 640)
-    cam.setInterleaved(False)
-    cam.setFps(30)
 
-    xoutRgb  = pipeline.create(dai.node.XLinkOut)
-    xoutRgb.setStreamName("rgb")
-    cam.preview.link(xoutRgb.input)
+    cam   = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
+    out_q = cam.requestOutput(
+        RESOLUCION_YOLO,
+        type=dai.ImgFrame.Type.BGR888p
+    ).createOutputQueue(maxSize=1, blocking=False)
 
     pipeline.start()
-    qRgb = pipeline.getOutputQueue("rgb", maxSize=1, blocking=False)
+    time.sleep(2)
 
-    frame        = None
-    startTime    = time.monotonic()
-    counter      = 0
-    color2       = (255, 0, 255)
-    ultimo_obb   = None   
+    startTime  = time.monotonic()
+    counter    = 0
+    color2     = (255, 0, 255)
+    ultimo_obb = None
 
+    #BUCLE PRINCIPAL: CAPTURA FRAMES, CORRE YOLO Y DISPARA EL ORDENAMIENTO
     while pipeline.isRunning():
-        inRgb = qRgb.tryGet()
+        inRgb = out_q.tryGet()
 
         if inRgb is not None:
-            frame = inRgb.getCvFrame()
-            counter += 1
+            frame_yolo = inRgb.getCvFrame()
+            counter   += 1
 
-            results      = model(frame, verbose=False)
-            ultimo_obb   = results[0].obb   
+            #INFERENCIA YOLO-OBB SOBRE EL FRAME ACTUAL
+            results    = model(frame_yolo, verbose=False, conf=0.6, iou=0.4)
+            ultimo_obb = results[0].obb
 
             fps_str = "FPS: {:.2f}".format(counter / (time.monotonic() - startTime))
-            cv2.putText(frame, fps_str, (2, frame.shape[0] - 4),
+            cv2.putText(frame_yolo, fps_str, (2, frame_yolo.shape[0] - 4),
                         cv2.FONT_HERSHEY_TRIPLEX, 0.4, color2)
 
-            displayFrame("rgb", frame, ultimo_obb)
-            print(fps_str)
+            displayFrame("rgb", frame_yolo, ultimo_obb)
 
+            #SI HAY DETECCIONES Y EL ROBOT ESTA LIBRE, INICIA EL ORDENAMIENTO
             if ultimo_obb is not None and len(ultimo_obb) > 0 and not robotOcupado:
                 robotOcupado = True
-                print("Objeto detectado, esperando 5 segundos")
-                time.sleep(5)
-    
-                frameFinal(frame, ultimo_obb)
+                print("\nObjeto detectado — esperando 5 segundos para estabilizar...")
+                waitActivo(5)
+                frameFinal(frame_yolo, ultimo_obb)
                 robotOcupado = False
 
         if cv2.waitKey(1) == ord("q"):
             pipeline.stop()
             break
 
+#SE CIERRAN LAS VENTANAS DE OPENCV
+cv2.destroyAllWindows()
+
+#SE LIBERA EL GRIPPER Y SE DESCONECTAN LOS CLIENTES RTDE
+gripper.move_and_wait_for_pos(0, 255, 255)
 gripper.disconnect()
+
 rtde_c.disconnect()
 rtde_r.disconnect()
+
+print("Sistema desconectado correctamente.")
